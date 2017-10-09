@@ -42,6 +42,14 @@
                 android:src="@android:drawable/ic_menu_send"
                 android:contentDescription="@string/action_send"/>
 
+        <Button
+            android:id="@+id/sendImg"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="img"
+            android:onClick="sendImg"
+            />
+
     </LinearLayout>
 
 </LinearLayout>

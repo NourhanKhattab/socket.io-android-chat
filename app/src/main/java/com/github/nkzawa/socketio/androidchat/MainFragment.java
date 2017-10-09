@@ -3,14 +3,18 @@ package com.github.nkzawa.socketio.androidchat;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
+import android.provider.MediaStore;
 import android.support.v4.app.Fragment;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.util.Base64;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -20,6 +24,7 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.TextView;
@@ -28,11 +33,15 @@ import android.widget.Toast;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
 import io.socket.client.Socket;
 import io.socket.emitter.Emitter;
+
+import static android.app.Activity.RESULT_OK;
 
 
 /**
@@ -43,7 +52,7 @@ public class MainFragment extends Fragment {
     private static final String TAG = "MainFragment";
 
     private static final int REQUEST_LOGIN = 0;
-
+    static final int REQUEST_IMAGE_CAPTURE = 1;
     private static final int TYPING_TIMER_LENGTH = 600;
 
     private RecyclerView mMessagesView;
@@ -69,7 +78,7 @@ public class MainFragment extends Fragment {
     public void onAttach(Context context) {
         super.onAttach(context);
         mAdapter = new MessageAdapter(context, mMessages);
-        if (context instanceof Activity){
+        if (context instanceof Activity) {
             //this.listener = (MainActivity) context;
         }
     }
@@ -83,8 +92,8 @@ public class MainFragment extends Fragment {
 
         ChatApplication app = (ChatApplication) getActivity().getApplication();
         mSocket = app.getSocket();
-        mSocket.on(Socket.EVENT_CONNECT,onConnect);
-        mSocket.on(Socket.EVENT_DISCONNECT,onDisconnect);
+        mSocket.on(Socket.EVENT_CONNECT, onConnect);
+        mSocket.on(Socket.EVENT_DISCONNECT, onDisconnect);
         mSocket.on(Socket.EVENT_CONNECT_ERROR, onConnectError);
         mSocket.on(Socket.EVENT_CONNECT_TIMEOUT, onConnectError);
         mSocket.on("new message", onNewMessage);
@@ -164,6 +173,13 @@ public class MainFragment extends Fragment {
         });
 
         ImageButton sendButton = (ImageButton) view.findViewById(R.id.send_button);
+        Button btn = (Button) view.findViewById(R.id.sendImg);
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                getImage();
+            }
+        });
         sendButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -172,19 +188,32 @@ public class MainFragment extends Fragment {
         });
     }
 
+
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (Activity.RESULT_OK != resultCode) {
-            getActivity().finish();
-            return;
+        if (RESULT_OK == resultCode && requestCode == REQUEST_LOGIN) {
+
+            mUsername = data.getStringExtra("username");
+            int numUsers = data.getIntExtra("numUsers", 1);
+
+            addLog(getResources().getString(R.string.message_welcome));
+            addParticipantsLog(numUsers);
+
+
         }
-
-        mUsername = data.getStringExtra("username");
-        int numUsers = data.getIntExtra("numUsers", 1);
-
-        addLog(getResources().getString(R.string.message_welcome));
-        addParticipantsLog(numUsers);
+        /* picking image*/
+        else if (requestCode == REQUEST_IMAGE_CAPTURE && resultCode == RESULT_OK) {
+            Bundle extras = data.getExtras();
+            Uri selectedimg = data.getData();
+            Bitmap imageBitmap = null;
+            try {
+                imageBitmap = (MediaStore.Images.Media.getBitmap(getActivity().getContentResolver(), selectedimg));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            sendImg(imageBitmap);
+        }
     }
 
     @Override
@@ -227,6 +256,12 @@ public class MainFragment extends Fragment {
         scrollToBottom();
     }
 
+    private void addMessage(Message message) {
+        mMessages.add(message);
+        mAdapter.notifyItemInserted(mMessages.size() - 1);
+        scrollToBottom();
+    }
+
     private void addTyping(String username) {
         mMessages.add(new Message.Builder(Message.TYPE_ACTION)
                 .username(username).build());
@@ -250,17 +285,58 @@ public class MainFragment extends Fragment {
 
         mTyping = false;
 
-        String message = mInputMessageView.getText().toString().trim();
-        if (TextUtils.isEmpty(message)) {
+        String messageTxt = mInputMessageView.getText().toString().trim();
+        if (TextUtils.isEmpty(messageTxt)) {
             mInputMessageView.requestFocus();
             return;
         }
 
         mInputMessageView.setText("");
-        addMessage(mUsername, message);
+        Message message = new Message.Builder(Message.TYPE_MESSAGE).message(messageTxt).username(mUsername).build();
+
+        JSONObject jsonObject = new JSONObject();
+        try {
+
+            jsonObject.put("username", message.getUsername());
+            jsonObject.put("type2", message.getType());
+            jsonObject.put("message", message.getMessage());
+
+        } catch (JSONException e) {
+            e.printStackTrace();
+            Log.i(TAG, e.getMessage());
+        }
+
+        addMessage(message);
 
         // perform the sending message attempt.
-        mSocket.emit("new message", message);
+        mSocket.emit("new message", jsonObject);
+    }
+
+    private void sendImg(Bitmap bitmap) {
+
+
+        if (!mSocket.connected()) return;
+
+        mTyping = false;
+
+        Message message = new Message.Builder(Message.TYPE_IMAGE).message(encodeImage(bitmap)).username(mUsername).build();
+
+        JSONObject jsonObject = new JSONObject();
+        try {
+
+            jsonObject.put("username", message.getUsername());
+            jsonObject.put("type2", message.getType());
+            jsonObject.put("message", message.getMessage());
+
+        } catch (JSONException e) {
+            e.printStackTrace();
+            Log.i(TAG, e.getMessage());
+        }
+
+        addMessage(message);
+
+        // perform the sending message attempt.
+        mSocket.emit("new message", jsonObject);
     }
 
     private void startSignIn() {
@@ -286,8 +362,8 @@ public class MainFragment extends Fragment {
             getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    if(!isConnected) {
-                        if(null!=mUsername)
+                    if (!isConnected) {
+                        if (null != mUsername)
                             mSocket.emit("add user", mUsername);
                         Toast.makeText(getActivity().getApplicationContext(),
                                 R.string.connect, Toast.LENGTH_LONG).show();
@@ -333,19 +409,26 @@ public class MainFragment extends Fragment {
             getActivity().runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    JSONObject data = (JSONObject) args[0];
-                    String username;
-                    String message;
+                    JSONObject allData = (JSONObject) args[0];
+
+                    String username, message;
+                    int type;
+
                     try {
+                        JSONObject data = allData.getJSONObject("message");
                         username = data.getString("username");
+                        type = data.optInt("type2");
                         message = data.getString("message");
+
+
                     } catch (JSONException e) {
-                        Log.e(TAG, e.getMessage());
                         return;
                     }
 
                     removeTyping(username);
-                    addMessage(username, message);
+                    Message message2 = new Message.Builder(type).username(username).message(message).build();
+                    addMessage(message2);
+
                 }
             });
         }
@@ -449,5 +532,20 @@ public class MainFragment extends Fragment {
             mSocket.emit("stop typing");
         }
     };
+
+    private String encodeImage(Bitmap bm) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        bm.compress(Bitmap.CompressFormat.JPEG, 100, baos);
+        byte[] b = baos.toByteArray();
+        return Base64.encodeToString(b, Base64.DEFAULT);
+
+    }
+
+    private void getImage() {
+        Intent intent = new Intent();
+        intent.setType("image/*");
+        intent.setAction(Intent.ACTION_GET_CONTENT);
+        startActivityForResult(Intent.createChooser(intent, "Select Picture"), REQUEST_IMAGE_CAPTURE);
+    }
 }
 
